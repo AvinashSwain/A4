@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>PDF to Single A4 Page</title>
+<style>
+:root{--bg:#f6f5f1;--card:#fff;--ink:#1d1d1b;--mut:#6b6a64;--line:#dcdad2;--acc:#b3261e;--acc2:#8f1d17;--ok:#1b7a3d;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#171716;--card:#222220;--ink:#efede6;--mut:#a09e95;--line:#3a3935;--acc:#e0554c;--acc2:#c9433a;--ok:#5cc47f;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#171716;--card:#222220;--ink:#efede6;--mut:#a09e95;--line:#3a3935;--acc:#e0554c;--acc2:#c9433a;--ok:#5cc47f;color-scheme:dark}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:640px;margin:0 auto;padding:28px 16px 48px}
+h1{font-size:1.5rem;margin:0 0 4px}
+p.sub{color:var(--mut);margin:0 0 20px}
+#drop{border:2px dashed var(--line);background:var(--card);border-radius:14px;padding:34px 16px;text-align:center;cursor:pointer;transition:.15s}
+#drop.over,#drop:hover{border-color:var(--acc)}
+#drop b{display:block;font-size:1.05rem;margin-bottom:4px}
+#drop span{color:var(--mut);font-size:.9rem}
+#list{margin-top:18px;display:flex;flex-direction:column;gap:10px}
+.row{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.nm{flex:1 1 200px;min-width:0;word-break:break-all;font-size:.95rem}
+.st{font-size:.85rem;color:var(--mut)}
+.st.ok{color:var(--ok)}.st.err{color:var(--acc)}
+button{font:inherit;font-size:.9rem;border:0;border-radius:8px;padding:8px 14px;background:var(--acc);color:#fff;cursor:pointer}
+button:hover{background:var(--acc2)}
+button:disabled{opacity:.5;cursor:default}
+.note{margin-top:22px;font-size:.85rem;color:var(--mut)}
+</style>
+</head>
+<body>
+<main>
+<h1>PDF to single A4 page</h1>
+<p class="sub">Merges a multi-page report into one A4 page. Your data isn’t changed, and files never leave your device.</p>
+<div id="drop" tabindex="0" role="button"><b>Drop PDFs here, or tap to choose</b><span>You can select several files at once</span></div>
+<input id="file" type="file" accept="application/pdf,.pdf" multiple hidden>
+<div id="list"></div>
+<p class="note">Built for India Post RD installment reports. The pages are stacked and scaled as vector content (not turned into an image), and only blank space above the table is trimmed, and only if the page wouldn’t fit otherwise.</p>
+</main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+<script>
+const AW=595.276, AH=841.89, M=14;
+pdfjsLib.GlobalWorkerOptions.workerSrc="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+const $=id=>document.getElementById(id);
+
+// analyse one page at 72 dpi: per-row flags
+async function analysePage(pdf,i){
+  const pg=await pdf.getPage(i+1), vp=pg.getViewport({scale:1});
+  const c=document.createElement("canvas"); c.width=Math.ceil(vp.width); c.height=Math.ceil(vp.height);
+  const x=c.getContext("2d",{willReadFrequently:true}); x.fillStyle="#fff"; x.fillRect(0,0,c.width,c.height);
+  await pg.render({canvasContext:x,viewport:vp}).promise;
+  const d=x.getImageData(0,0,c.width,c.height).data, w=c.width, h=c.height;
+  const ink=new Uint8Array(h), white=new Uint8Array(h), gf=new Float32Array(h);
+  for(let r=0;r<h;r++){let mn=255,mx=0,g=0;
+    for(let k=0;k<w;k++){const o=(r*w+k)*4,v=0.299*d[o]+0.587*d[o+1]+0.114*d[o+2];
+      if(v<mn)mn=v; if(v<mx||true){} if(v<245)g++; if(v<250)mx=1;}
+    ink[r]=mn<200?1:0; white[r]=mx?0:1; gf[r]=g/w;}
+  return {W:vp.width,H:vp.height,h,ink,white,gf};
+}
+
+async function convert(bytes){
+  const pdf=await pdfjsLib.getDocument({data:bytes.slice(0)}).promise;
+  const n=pdf.numPages, pages=[];
+  for(let i=0;i<n;i++) pages.push(await analysePage(pdf,i));
+  const W=pages[0].W, H=pages[0].H;
+  // trimmed height of each page
+  const hs=pages.map(p=>{let l=0;for(let r=0;r<p.h;r++)if(p.ink[r])l=r;return Math.min(p.H,l+12)});
+  const offs=[];let tot=0;hs.forEach(h=>{offs.push(tot);tot+=h});
+  const white=new Uint8Array(tot), gf=new Float32Array(tot);
+  pages.forEach((p,i)=>{for(let r=0;r<hs[i];r++){white[offs[i]+r]=p.white[r];gf[offs[i]+r]=p.gf[r]}});
+  // first table row = first row that is mostly grey (table header band)
+  let top=0;for(let r=0;r<tot;r++){if(gf[r]>0.6){top=r;break}}
+  for(let r=Math.max(0,top-2);r<tot;r++)white[r]=0;
+  const runs=[];for(let i=0;i<tot;){ if(white[i]){let j=i;while(j<tot&&white[j])j++; if(j-i>18&&i>0&&j<tot)runs.push([i,j]); i=j}else i++ }
+  const sc0=(AW-2*M)/W, target=(AH-2*M)/sc0, need=Math.max(0,tot-target+2);
+  const rt=runs.reduce((s,r)=>s+r[1]-r[0],0), frac=rt?Math.min(0.9,need/rt):0;
+  const segs=[];let st=0;
+  runs.forEach(([i,j])=>{const k=(j-i)*(1-frac);segs.push([st,i+k/2]);st=j-k/2});
+  segs.push([st,tot]);
+  const total=segs.reduce((s,a)=>s+a[1]-a[0],0);
+  const sc=Math.min((AW-2*M)/W,(AH-2*M)/total);
+
+  const {PDFDocument}=PDFLib;
+  const src=await PDFDocument.load(bytes), out=await PDFDocument.create();
+  const pg=out.addPage([AW,AH]); const tx=(AW-W*sc)/2; let y=0;
+  for(const [a,b] of segs){
+    let cur=y;
+    for(let i=0;i<n;i++){
+      const lo=Math.max(a,offs[i]), hi=Math.min(b,offs[i]+hs[i]); if(hi-lo<0.05)continue;
+      const h=hi-lo, emb=await out.embedPage(src.getPage(i),{left:0,right:W,bottom:H-(hi-offs[i]),top:H-(lo-offs[i])});
+      pg.drawPage(emb,{x:tx,y:AH-M-sc*(cur+h),width:W*sc,height:h*sc}); cur+=h;
+    }
+    y+=b-a;
+  }
+  return {bytes:await out.save(),scale:sc,pages:n};
+}
+
+function addRow(file){
+  const el=document.createElement("div"); el.className="row";
+  el.innerHTML='<div class="nm"></div><div class="st">Working…</div>';
+  el.firstChild.textContent=file.name; $("list").appendChild(el);
+  const st=el.querySelector(".st");
+  (async()=>{
+    try{
+      const buf=await file.arrayBuffer();
+      const r=await convert(new Uint8Array(buf));
+      st.textContent=r.pages+" pages → 1 A4 page (scale "+Math.round(r.scale*100)+"%)"; st.className="st ok";
+      const name=file.name.replace(/\.pdf$/i,"")+"_A4.pdf";
+      const btn=document.createElement("button");btn.textContent="Download";
+      btn.onclick=()=>{const u=URL.createObjectURL(new Blob([r.bytes],{type:"application/pdf"}));
+        const l=document.createElement("a");l.href=u;l.download=name;document.body.appendChild(l);l.click();l.remove();setTimeout(()=>URL.revokeObjectURL(u),4000)};
+      el.appendChild(btn);
+    }catch(e){st.textContent="Couldn’t process this file: "+(e.message||e);st.className="st err"}
+  })();
+}
+function take(files){[...files].filter(f=>/pdf$/i.test(f.type)||/\.pdf$/i.test(f.name)).forEach(addRow)}
+$("drop").onclick=()=>$("file").click();
+$("drop").onkeydown=e=>{if(e.key==="Enter"||e.key===" ")$("file").click()};
+$("file").onchange=e=>{take(e.target.files);e.target.value=""};
+["dragover","dragenter"].forEach(t=>$("drop").addEventListener(t,e=>{e.preventDefault();$("drop").classList.add("over")}));
+["dragleave","drop"].forEach(t=>$("drop").addEventListener(t,e=>{e.preventDefault();$("drop").classList.remove("over")}));
+$("drop").addEventListener("drop",e=>take(e.dataTransfer.files));
+</script>
+</body>
+</html>
